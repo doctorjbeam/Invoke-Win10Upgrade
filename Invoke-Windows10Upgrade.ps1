@@ -2,47 +2,50 @@
 #requires -RunAsAdministrator
 function Invoke-Windows10Upgrade {
     [CmdletBinding()]
-    param
-	(
-	[Parameter(Mandatory=$true)]
-	[String[]]$ComputerName,
+	
+    param (
+		[Parameter(Mandatory=$true)]
+		[String[]]$ComputerName,
+		
         [Parameter(Mandatory=$true)]
         [PSCredential]$Credential,
-        [Parameter(Mandatory=$true)]
+        
+		[Parameter(Mandatory=$true)]
         [String]$MDTLiteTouchPath,
-        [Parameter(Mandatory=$true)]
+        
+		[Parameter(Mandatory=$true)]
         [String]$MDTComputerName,
-        [Parameter(Mandatory=$true)]
+        
+		[Parameter(Mandatory=$true)]
         [String]$MDTRoot,
-        [Parameter(Mandatory=$False)]
+        
+		[Parameter(Mandatory=$False)]
         [Switch]$AllowRDP,
-        [Parameter(Mandatory=$False)]
+        
+		[Parameter(Mandatory=$False)]
         [Switch]$DisableRDP 
 	)
-    process
-    {
+	
+    process {
         #Test to ensure computers are online and return only those that can be pinged
-        workflow Test-Ping 
-        {
-            param( 
+        workflow Test-Ping {
+            param ( 
                 [Parameter(Mandatory=$true)] 
                 [string[]]$Computers
             )
-                foreach -parallel -throttlelimit 150 ($Computer in $Computers) 
-                {
-                    if (Test-Connection -Count 1 $Computer -Quiet -ErrorAction SilentlyContinue) 
-                    {    
-                        $Computer
-                    }
-                    else
-                    {
-                        Write-Warning -Message "$Computer not online"
-                    }
-                }
-         }
+			
+			foreach -parallel -throttlelimit 150 ($Computer in $Computers) {
+				if (Test-Connection -Count 1 $Computer -Quiet -ErrorAction SilentlyContinue) {    
+					$Computer
+				} else {
+					Write-Warning -Message "$Computer not online"
+				}
+			}
+        }
+		
         $ComputerName = Test-Ping -Computers $ComputerName 
-        if (!$ComputerName)
-        {
+		
+        if (!$ComputerName) {
             Write-Warning -Message 'No computers are online. Exiting.'
             Break
         }
@@ -58,88 +61,86 @@ function Invoke-Windows10Upgrade {
         } 
         
         #Allow RDP
-        if ($AllowRDP)
-        {
-            Invoke-Command –Computername $ComputerName –ScriptBlock {
-                Set-ItemProperty -Path "HKLM:\System\CurrentControlSet\Control\Terminal Server" -Name "fDenyTSConnections" –Value 0
-                Netsh advfirewall firewall set rule group="remote desktop" new enable=yes }
+        if ($AllowRDP) {
+            Invoke-Command -Computername $ComputerName -ScriptBlock {
+                Set-ItemProperty -Path "HKLM:\System\CurrentControlSet\Control\Terminal Server" -Name "fDenyTSConnections" -Value 0
+                Netsh advfirewall firewall set rule group="remote desktop" new enable=yes 
+			}
         } 
         
         #RDP using workflow into all computers in $ComputerName
-        workflow Connect-RDP
-        {
-            param(
-            [Parameter(Mandatory=$true)]
-            [string[]]$RDPComputers,
-            [Parameter(Mandatory=$true)]
-            [pscredential]$RDPCredential
+        workflow Connect-RDP {
+            param (
+				[Parameter(Mandatory=$true)]
+				[string[]]$RDPComputers,
+				[Parameter(Mandatory=$true)]
+				[pscredential]$RDPCredential
             )
+			
             $RDPUser = $RDPCredential.UserName
             $RDPPassword = $RDPCredential.GetNetworkCredential().Password
             
-            foreach -parallel -Throttlelimit 150 ($RDPComputer in $RDPComputers)
-            {
+            foreach -parallel -Throttlelimit 150 ($RDPComputer in $RDPComputers) {
                 cmdkey.exe /generic:TERMSRV/$RDPComputer /user:$RDPUser /pass:$RDPPassword
                 Start-Process -FilePath mstsc.exe -ArgumentList "/v $RDPComputer" 
             }
         }
+		
         #Put start time in variable for MDT monitoring
         $StartTime =  (Get-Date).ToUniversalTime()
         Connect-RDP -RDPComputers $ComputerName -RDPCredential $Credential 
-        #Sleep to wait for litetouch to start
+        
+		#Sleep to wait for litetouch to start
         Start-Sleep -seconds 300
 
         #Remove scheduled task
         Invoke-Command -ComputerName $ComputerName -ScriptBlock {
-        schtasks.exe /Delete /TN 'Upgrade to Windows 10' /F  
+			schtasks.exe /Delete /TN 'Upgrade to Windows 10' /F  
         }
 
         #Monitor MDT results
-        try 
-        {
+        try {
             $Results = Invoke-Command -ComputerName $MDTComputerName -ArgumentList $MDTRoot,$StartTime -ErrorAction Stop -ScriptBlock {
                 Add-PSSnapin Microsoft.BDD.PSSnapIn | Out-null
                 New-PSDrive -Name "DS001" -PSProvider "MDTProvider" -Root $Using:MDTRoot | out-null
-                Get-MDTMonitorData -Path DS001: | Where-Object {$_.PercentComplete -ne '100' -and $_.StartTime -gt $Using:StartTime} | Select-Object name,percentcomplete,errors,starttime | Sort-Object -Property starttime -Descending | Format-Table -AutoSize }
-            if (!$Results)
-            {
+                Get-MDTMonitorData -Path DS001: | Where-Object {$_.PercentComplete -ne '100' -and $_.StartTime -gt $Using:StartTime} | Select-Object name,percentcomplete,errors,starttime | Sort-Object -Property starttime -Descending | Format-Table -AutoSize 
+			}
+			
+            if (!$Results) {
                 Write-Warning -Message 'No MDT Monitoring data found. Investigate and press enter to continue'
                 Read-Host "Press enter to continue"
             }
-        }
-        catch 
-        {
+        } catch {
             Write-Error $_
             Read-Host "Press enter to continue" 
         }
 
-        While ($AllDone -ne '1')
-        {
+        While ($AllDone -ne '1') {
             $Results = Invoke-Command -ComputerName $MDTComputerName -ArgumentList $MDTRoot,$StartTime -ErrorAction Stop -ScriptBlock {
                 Add-PSSnapin Microsoft.BDD.PSSnapIn | Out-null
                 New-PSDrive -Name "DS001" -PSProvider "MDTProvider" -Root $Using:MDTRoot | Out-null
-                Get-MDTMonitorData -Path DS001: | Where-Object {$_.PercentComplete -ne '100' -and $_.StartTime -gt $Using:StartTime} | Select-Object name,percentcomplete,errors,starttime | Sort-Object -Property starttime -Descending | Format-Table -AutoSize }
-            if ($Results)
-            {
+                Get-MDTMonitorData -Path DS001: | Where-Object {$_.PercentComplete -ne '100' -and $_.StartTime -gt $Using:StartTime} | Select-Object name,percentcomplete,errors,starttime | Sort-Object -Property starttime -Descending | Format-Table -AutoSize 
+			}
+			
+            if ($Results) {
                   Invoke-Command -ComputerName $MDTComputerName -ArgumentList $MDTRoot,$StartTime -ErrorAction Stop -ScriptBlock {
                       Add-PSSnapin Microsoft.BDD.PSSnapIn | Out-null
                       New-PSDrive -Name "DS001" -PSProvider "MDTProvider" -Root $Using:MDTRoot | Out-null 
                       Get-MDTMonitorData -Path DS001: | Where-Object {$_.StartTime -gt $Using:StartTime} | Select-Object name,percentcomplete,errors,starttime | Sort-Object -Property starttime -Descending | Format-Table -Property @{Expression={$_.StartTime.ToLocalTime()};Label="StartTime"},name,percentcomplete,errors -AutoSize }
-            }
-            else 
-            {
+            } else {
                 $AllDone = '1'
                 Write-Warning -Message 'Deployment Complete'
             }
+			
             Start-Sleep -Seconds 60
         }
 
         #Disable RDP
-        if ($DisableRDP)
-        {
-            Invoke-Command –Computername $ComputerName –ScriptBlock {
-               Set-ItemProperty -Path "HKLM:\System\CurrentControlSet\Control\Terminal Server" -Name "fDenyTSConnections" –Value 1
-               Netsh advfirewall firewall set rule group="remote desktop" new enable=no }
+        if ($DisableRDP) {
+            Invoke-Command -Computername $ComputerName -ScriptBlock {
+				Set-ItemProperty -Path "HKLM:\System\CurrentControlSet\Control\Terminal Server" -Name "fDenyTSConnections" -Value 1
+				Netsh advfirewall firewall set rule group="remote desktop" new enable=no 
+			}
         }   
     }
 }
